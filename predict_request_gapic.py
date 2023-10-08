@@ -15,9 +15,12 @@ import os
 import chromadb
 from tqdm import tqdm
 import hashlib
+import imageio.v3 as iio
+import subprocess
 
 _IMAGE_DIR = flags.DEFINE_string('image_dir', None, 'Image directory')
 _IMAGE_FILE = flags.DEFINE_string('image_file', None, 'Image filename')
+_VIDEO_FILE = flags.DEFINE_string('video_file', None, 'Video filename')
 _TEXT = flags.DEFINE_string('text', None, 'Text to input')
 _PROJECT = flags.DEFINE_string('project', None, 'Project id')
 
@@ -76,9 +79,8 @@ class EmbeddingPredictionClient:
 
   def load_images(self, image_dir):
     '''Loads images from a directory., and adds each to a chroma db.'''
-    
+    h = hashlib.new("md5")
     for filename in tqdm(os.listdir(image_dir)):
-      h = hashlib.new("md5")
       if filename.endswith('.jpg'):
         image_path = os.path.join(image_dir, filename)
         with open(image_path, "rb") as f:
@@ -97,12 +99,39 @@ class EmbeddingPredictionClient:
                 ids=[id]
             )
 
+  def load_video(self, video_file):
+    '''Loads images from a video, and adds each to a chroma db.'''
+    h = hashlib.new("md5")
+    '''get frame rate of video file'''
+    fps = iio.immeta(video_file)['fps']
+    for idx, frame in tqdm(enumerate(iio.imiter(video_file))):
+      if (idx % 30) != 0:
+        continue
+      iio.imwrite(f"extracted_images/frame{idx:03d}.jpg", frame)
+      # convert frame to bytes
+      image_contents = iio.imwrite("<bytes>", frame, extension=".png")
+      h.update(image_contents)
+      id = h.hexdigest()
+      results = self.collection.get(ids=[id])
+      if len(results['ids']) == 0:
+        response = self.get_embedding(image_bytes=image_contents)
+
+        # # Add to chroma db.
+        self.collection.add(
+            embeddings=[response.image_embedding],
+            documents=[f"extracted_images/frame{idx:03d}.jpg"],
+            metadatas=[{"seek_time": idx / fps , "file": video_file}],
+            ids=[f"{idx:03d}"]
+        )
+
 def main(argv):
   client = EmbeddingPredictionClient(project=_PROJECT.value)
   
   start = time.time()
   if _IMAGE_DIR.value:
     client.load_images(_IMAGE_DIR.value)
+  if _VIDEO_FILE.value:
+    client.load_video(_VIDEO_FILE.value)
   response = client.get_embedding(text=_TEXT.value)
   end = time.time()
 
@@ -111,7 +140,15 @@ def main(argv):
     n_results=2
   )
   print(matches)
+
   print('Time taken: ', end - start)
+  print(matches['documents'][0])
+  if matches['metadatas'][0][0]['file']:
+    os.system(' '.join([
+      'open',
+      '-a /Applications/VLC.app/Contents/MacOS/VLC',
+      f"{matches['metadatas'][0][0]['file']} --args --start-time {int(matches['metadatas'][0][0]['seek_time']) - 1}"
+    ]))
 
 
 if __name__ == "__main__":
