@@ -8,3 +8,5 @@ tqdm
 imagehash==0.3
 imageio
 imageio-ffmpeg
+pymongo
+
